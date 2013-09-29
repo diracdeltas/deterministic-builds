@@ -1,10 +1,13 @@
 """
-A fork of the Python 2.6 ZipFile module (https://github.com/diracdeltas/deterministic-builds.git),
-modified such that zip files can be created deterministically.
+A fork of the Zipfile module to read and write ZIP files from Python 2.6.
+This module aims to create deterministic, byte-for-byte identical zip files.
+
+Author: Yan Zhu, yan@mit.edu
 """
 
 import struct, os, time, sys, shutil
 import binascii, cStringIO, stat
+import unicodedata
 
 try:
     import zlib # We may need its compression method
@@ -36,6 +39,8 @@ ZIP_MAX_COMMENT = (1 << 16) - 1
 ZIP_STORED = 0
 ZIP_DEFLATED = 8
 # Other ZIP compression methods not supported
+
+DEFAULT_DATE = (1980,1,1,0,0,0)  # hard-coded timestamp
 
 # Below are some formats and associated data for reading/writing headers using
 # the struct module.  The names and structures of headers/records are those used
@@ -129,6 +134,19 @@ _CD64_NUMBER_ENTRIES_THIS_DISK = 6
 _CD64_NUMBER_ENTRIES_TOTAL = 7
 _CD64_DIRECTORY_SIZE = 8
 _CD64_OFFSET_START_CENTDIR = 9
+
+def normalize_unicode(filename):
+    """For dealing with different unicode normalizations in filenames."""
+    return unicodedata.normalize('NFC', unicode(filename, 'utf-8')).encode('utf-8')
+
+def standardize_filename(filename):
+    """Get OS-independent form of filename"""
+    # This is used to ensure paths in generated ZIP files always use
+    # forward slashes as the directory separator, as required by the
+    # ZIP format specification.
+    if os.sep != "/" and os.sep in filename:
+        filename = filename.replace(os.sep, "/")
+    return normalize_unicode(filename)
 
 def is_zipfile(filename):
     """Quickly see if file is a ZIP file by checking the magic number."""
@@ -258,7 +276,7 @@ class ZipInfo (object):
             '_raw_time',
         )
 
-    def __init__(self, filename="NoName", date_time=(1980,1,1,0,0,0)):
+    def __init__(self, filename="NoName", date_time=DEFAULT_DATE):
         self.orig_filename = filename   # Original file name in archive
 
         # Terminate the file name at the first null byte.  Null bytes in file
@@ -269,10 +287,7 @@ class ZipInfo (object):
         # This is used to ensure paths in generated ZIP files always use
         # forward slashes as the directory separator, as required by the
         # ZIP format specification.
-        if os.sep != "/" and os.sep in filename:
-            filename = filename.replace(os.sep, "/")
-
-        self.filename = filename        # Normalized file name
+        self.filename = standardize_filename(filename)  # Normalized file name
         self.date_time = date_time      # year, month, day, hour, min, sec
         # Standard values:
         self.compress_type = ZIP_STORED # Type of compression for the file
@@ -999,7 +1014,7 @@ class ZipFile:
             if not self._allowZip64:
                 raise LargeZipFile("Zipfile size would require ZIP64 extensions")
 
-    def write(self, filename, arcname=None, compress_type=None):
+    def write(self, filename, arcname=None, compress_type=None, date_time=DEFAULT_DATE):
         """Put the bytes from filename into the archive under the name
         arcname."""
         if not self.fp:
@@ -1008,8 +1023,6 @@ class ZipFile:
 
         st = os.stat(filename)
         isdir = stat.S_ISDIR(st.st_mode)
-        mtime = time.localtime(st.st_mtime)
-        date_time = mtime[0:6]
         # Create ZipInfo instance to store file information
         if arcname is None:
             arcname = filename
@@ -1019,13 +1032,13 @@ class ZipFile:
         if isdir:
             arcname += '/'
         zinfo = ZipInfo(arcname, date_time)
-        zinfo.external_attr = (st[0] & 0xFFFF) << 16L      # Unix attributes
+        zinfo.external_attr = 0600 << 16      # Unix attributes, hard-coded
         if compress_type is None:
             zinfo.compress_type = self.compression
         else:
             zinfo.compress_type = compress_type
 
-        zinfo.file_size = st.st_size
+        zinfo.file_size = long(st.st_size)
         zinfo.flag_bits = 0x00
         zinfo.header_offset = self.fp.tell()    # Start of header bytes
 
@@ -1119,6 +1132,21 @@ class ZipFile:
                   zinfo.file_size))
         self.filelist.append(zinfo)
         self.NameToInfo[zinfo.filename] = zinfo
+
+    def write_from_directory(self, directory, exclusions=None,
+                             compress_type=None, date_time=DEFAULT_DATE):
+        """
+        Create a ZIP package deterministically from a directory.
+        We need to sort the files in an OS-independent way before adding to the archive.
+        """
+        file_dict = {}
+        for root,subfolders,files in os.walk(directory):
+            for fi in files:
+                filename = os.path.join(root, fi)
+                if filename not in exclusions:
+                    file_dict.update({standardize_filename(filename): filename})
+        for new_filename, old_filename in sorted(file_dict.items()):
+            self.write(old_filename, compress_type=compress_type, date_time=date_time)
 
     def __del__(self):
         """Call the "close()" method in case the user forgot."""
