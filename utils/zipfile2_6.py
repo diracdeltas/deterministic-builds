@@ -2,6 +2,8 @@
 A fork of the Zipfile module to read and write ZIP files from Python 2.6.
 This module aims to create deterministic, byte-for-byte identical zip files.
 
+See the original at http://hg.python.org/cpython/file/2.6/Lib/zipfile.py.
+
 Author: Yan Zhu, yan@mit.edu
 """
 
